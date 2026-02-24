@@ -38,6 +38,30 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _c_to_f(celsius: float | None) -> float | None:
+    """Convert Celsius to Fahrenheit with Mitsubishi-accurate rounding.
+
+    Mitsubishi systems use 0.5°C steps internally. This converts to the
+    nearest whole Fahrenheit value, matching the Comfort app's display.
+    """
+    if celsius is None:
+        return None
+    return round(celsius * 9.0 / 5.0 + 32.0)
+
+
+def _f_to_c(fahrenheit: float | None) -> float | None:
+    """Convert Fahrenheit to the nearest 0.5°C step for the Kumo Cloud API.
+
+    Mitsubishi systems only accept 0.5°C increments, so we round to the
+    nearest 0.5°C value. This matches the Comfort app's behavior.
+    """
+    if fahrenheit is None:
+        return None
+    celsius = (fahrenheit - 32.0) * 5.0 / 9.0
+    return round(celsius * 2.0) / 2.0
+
+
 # Mapping from Kumo Cloud operation modes to Home Assistant HVAC modes
 KUMO_TO_HVAC_MODE = {
     OPERATION_MODE_OFF: HVACMode.OFF,
@@ -85,7 +109,7 @@ async def async_setup_entry(
 class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
     """Representation of a Kumo Cloud climate device."""
 
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     _attr_has_entity_name = True
     _attr_name = None
 
@@ -144,7 +168,7 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
     def current_temperature(self) -> float | None:
         """Return the current temperature."""
         adapter = self.device.zone_data.get("adapter", {})
-        return adapter.get("roomTemp")
+        return _c_to_f(adapter.get("roomTemp"))
 
     @property
     def target_temperature(self) -> float | None:
@@ -153,13 +177,13 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
         hvac_mode = self.hvac_mode
 
         if hvac_mode == HVACMode.COOL:
-            return adapter.get("spCool")
+            return _c_to_f(adapter.get("spCool"))
         elif hvac_mode == HVACMode.HEAT:
-            return adapter.get("spHeat")
+            return _c_to_f(adapter.get("spHeat"))
         elif hvac_mode == HVACMode.HEAT_COOL:
             # For auto mode, could return either cool or heat setpoint
             # Return the cool setpoint as default
-            return adapter.get("spCool") or adapter.get("spHeat")
+            return _c_to_f(adapter.get("spCool") or adapter.get("spHeat"))
 
         return None
 
@@ -322,9 +346,10 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
         if profile:
             profile_data = profile[0] if isinstance(profile, list) else profile
             min_setpoints = profile_data.get("minimumSetPoints", {})
-            # Return the minimum of heat and cool setpoints
-            return min(min_setpoints.get("heat", 16), min_setpoints.get("cool", 16))
-        return 16.0
+            # Return the minimum of heat and cool setpoints, converted to F
+            min_c = min(min_setpoints.get("heat", 16), min_setpoints.get("cool", 16))
+            return _c_to_f(min_c)
+        return _c_to_f(16.0)
 
     @property
     def max_temp(self) -> float:
@@ -333,14 +358,15 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
         if profile:
             profile_data = profile[0] if isinstance(profile, list) else profile
             max_setpoints = profile_data.get("maximumSetPoints", {})
-            # Return the maximum of heat and cool setpoints
-            return max(max_setpoints.get("heat", 30), max_setpoints.get("cool", 30))
-        return 30.0
+            # Return the maximum of heat and cool setpoints, converted to F
+            max_c = max(max_setpoints.get("heat", 30), max_setpoints.get("cool", 30))
+            return _c_to_f(max_c)
+        return _c_to_f(30.0)
 
     @property
     def target_temperature_step(self) -> float:
         """Return the supported step of target temperature."""
-        return 0.5  # Kumo Cloud typically supports 0.5 degree steps
+        return 1.0  # 1°F steps (maps to ~0.5°C steps internally)
 
     @property
     def available(self) -> bool:
@@ -380,9 +406,12 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
-        target_temp = kwargs.get(ATTR_TEMPERATURE)
-        if target_temp is None:
+        target_temp_f = kwargs.get(ATTR_TEMPERATURE)
+        if target_temp_f is None:
             return
+
+        # Convert from Fahrenheit to nearest 0.5°C for the API
+        target_temp_c = _f_to_c(target_temp_f)
 
         hvac_mode = self.hvac_mode
         commands = {}
@@ -391,21 +420,21 @@ class KumoCloudClimate(CoordinatorEntity, ClimateEntity):
         device_data = self.device.device_data
 
         if hvac_mode == HVACMode.COOL:
-            commands["spCool"] = target_temp
-            # Maintain heat setpoint
+            commands["spCool"] = target_temp_c
+            # Maintain heat setpoint (already in Celsius from API)
             sp_heat = device_data.get("spHeat", adapter.get("spHeat"))
             if sp_heat is not None:
                 commands["spHeat"] = sp_heat
         elif hvac_mode == HVACMode.HEAT:
-            commands["spHeat"] = target_temp
-            # Maintain cool setpoint
+            commands["spHeat"] = target_temp_c
+            # Maintain cool setpoint (already in Celsius from API)
             sp_cool = device_data.get("spCool", adapter.get("spCool"))
             if sp_cool is not None:
                 commands["spCool"] = sp_cool
         elif hvac_mode == HVACMode.HEAT_COOL:
-            # For auto mode, set both setpoints based on current temperature
-            commands["spCool"] = target_temp
-            commands["spHeat"] = target_temp - 2  # 2 degree hysteresis
+            # For auto mode, set both setpoints
+            commands["spCool"] = target_temp_c
+            commands["spHeat"] = target_temp_c - 1.0  # ~2°F hysteresis in Celsius
 
         if commands:
             await self._send_command_and_refresh(commands)
