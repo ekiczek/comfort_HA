@@ -39,25 +39,47 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _c_to_f(celsius: float | None) -> float | None:
-    """Convert Celsius to Fahrenheit with Mitsubishi-accurate rounding.
+# Mitsubishi's custom Fahrenheit-to-Celsius lookup table.
+# Derived from the Comfort app / MA remote controller's actual behavior.
+# Standard math (round to nearest 0.5°C) diverges from Mitsubishi's mapping
+# at several points (64-66°F and 69-72°F), so we use this table to ensure
+# HA, the Comfort app, and the physical thermostat all agree.
+_F_TO_C: dict[int, float] = {
+    61: 16.0, 62: 16.5, 63: 17.0, 64: 17.5, 65: 18.0, 66: 18.5,
+    67: 19.5, 68: 20.0, 69: 21.0, 70: 21.5, 71: 22.0, 72: 22.5,
+    73: 23.0, 74: 23.5, 75: 24.0, 76: 24.5, 77: 25.0, 78: 25.5,
+    79: 26.0, 80: 26.5,
+}
 
-    Mitsubishi systems use 0.5°C steps internally. This converts to the
-    nearest whole Fahrenheit value, matching the Comfort app's display.
+# Reverse lookup: Celsius to Fahrenheit (built from the same table).
+_C_TO_F: dict[float, int] = {c: f for f, c in _F_TO_C.items()}
+
+
+def _c_to_f(celsius: float | None) -> float | None:
+    """Convert Celsius to Fahrenheit using Mitsubishi's lookup table.
+
+    Falls back to standard rounding for values outside the table
+    (e.g. current room temperature readings that may not be exact setpoints).
     """
     if celsius is None:
         return None
+    if celsius in _C_TO_F:
+        return _C_TO_F[celsius]
+    # Fallback for values not in the table (room temp readings, etc.)
     return round(celsius * 9.0 / 5.0 + 32.0)
 
 
 def _f_to_c(fahrenheit: float | None) -> float | None:
-    """Convert Fahrenheit to the nearest 0.5°C step for the Kumo Cloud API.
+    """Convert Fahrenheit to Celsius using Mitsubishi's lookup table.
 
-    Mitsubishi systems only accept 0.5°C increments, so we round to the
-    nearest 0.5°C value. This matches the Comfort app's behavior.
+    Falls back to standard rounding for values outside the table.
     """
     if fahrenheit is None:
         return None
+    f_int = int(round(fahrenheit))
+    if f_int in _F_TO_C:
+        return _F_TO_C[f_int]
+    # Fallback for values outside the table
     celsius = (fahrenheit - 32.0) * 5.0 / 9.0
     return round(celsius * 2.0) / 2.0
 
