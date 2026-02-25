@@ -39,7 +39,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-# Mitsubishi's custom Fahrenheit-to-Celsius lookup table.
+# Mitsubishi's custom Fahrenheit-to-Celsius lookup table for setpoints.
 # Derived from the Comfort app / MA remote controller's actual behavior.
 # Standard math (round to nearest 0.5°C) diverges from Mitsubishi's mapping
 # at several points (64-66°F and 69-72°F), so we use this table to ensure
@@ -51,8 +51,17 @@ _F_TO_C: dict[int, float] = {
     79: 26.0, 80: 26.5,
 }
 
-# Reverse lookup: Celsius to Fahrenheit (built from the same table).
-_C_TO_F: dict[float, int] = {c: f for f, c in _F_TO_C.items()}
+# Celsius-to-Fahrenheit lookup for display. This is NOT a simple inverse of
+# _F_TO_C because Mitsubishi's C->F mapping for room temperature display
+# differs from the setpoint mapping at certain values (e.g. 19.0°C = 67°F
+# for display, but 67°F = 19.5°C for setpoints).
+_C_TO_F: dict[float, int] = {
+    16.0: 61, 16.5: 62, 17.0: 63, 17.5: 64, 18.0: 65, 18.5: 66,
+    19.0: 67, 19.5: 67, 20.0: 68, 20.5: 69,
+    21.0: 69, 21.5: 70, 22.0: 71, 22.5: 72,
+    23.0: 73, 23.5: 74, 24.0: 75, 24.5: 76, 25.0: 77, 25.5: 78,
+    26.0: 79, 26.5: 80,
+}
 
 
 def _c_to_f(celsius: float | None) -> float | None:
